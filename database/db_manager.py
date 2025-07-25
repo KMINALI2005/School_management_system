@@ -219,5 +219,290 @@ class DatabaseManager:
                 address = ?, phone = ?, parent_phone = ?, class_id = ?
             WHERE id = ?
         '''
-        self.cursor.execute(query, (
+        self.cursor.execute(query, (# ... تكملة من الكود السابق
+            student_data['full_name'],
+            student_data['date_of_birth'],
+            student_data['gender'],
+            student_data['address'],
+            student_data['phone'],
+            student_data['parent_phone'],
+            student_data['class_id'],
+            student_id
+        ))
+        self.connection.commit()
+    
+    def delete_student(self, student_id):
+        """حذف طالب (soft delete)"""
+        self.cursor.execute(
+            "UPDATE students SET status = 'inactive' WHERE id = ?", 
+            (student_id,)
+        )
+        self.connection.commit()
+    
+    def add_teacher(self, teacher_data):
+        """إضافة معلم جديد"""
+        # أولاً إنشاء حساب مستخدم للمعلم
+        password_hash = hashlib.sha256(teacher_data['password'].encode()).hexdigest()
+        self.cursor.execute('''
+            INSERT INTO users (username, password, role, full_name, email, phone)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            teacher_data['username'],
+            password_hash,
+            'teacher',
+            teacher_data['full_name'],
+            teacher_data['email'],
+            teacher_data['phone']
+        ))
+        user_id = self.cursor.lastrowid
+        
+        # ثم إضافة بيانات المعلم
+        self.cursor.execute('''
+            INSERT INTO teachers (teacher_id, full_name, email, phone, 
+                                specialization, user_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            teacher_data['teacher_id'],
+            teacher_data['full_name'],
+            teacher_data['email'],
+            teacher_data['phone'],
+            teacher_data['specialization'],
+            user_id
+        ))
+        self.connection.commit()
+        return self.cursor.lastrowid
+    
+    def get_all_teachers(self):
+        """الحصول على جميع المعلمين"""
+        self.cursor.execute('''
+            SELECT t.*, u.username 
+            FROM teachers t
+            JOIN users u ON t.user_id = u.id
+        ''')
+        return self.cursor.fetchall()
+    
+    def add_class(self, class_data):
+        """إضافة صف جديد"""
+        self.cursor.execute('''
+            INSERT INTO classes (class_name, grade_level, section, 
+                               capacity, academic_year)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (
+            class_data['class_name'],
+            class_data['grade_level'],
+            class_data['section'],
+            class_data['capacity'],
+            class_data['academic_year']
+        ))
+        self.connection.commit()
+        return self.cursor.lastrowid
+    
+    def get_all_classes(self):
+        """الحصول على جميع الصفوف"""
+        self.cursor.execute('''
+            SELECT c.*, 
+                   (SELECT COUNT(*) FROM students WHERE class_id = c.id AND status = 'active') as student_count
+            FROM classes c
+        ''')
+        return self.cursor.fetchall()
+    
+    def add_subject(self, subject_data):
+        """إضافة مادة جديدة"""
+        self.cursor.execute('''
+            INSERT INTO subjects (subject_name, subject_code, credits, description)
+            VALUES (?, ?, ?, ?)
+        ''', (
+            subject_data['subject_name'],
+            subject_data['subject_code'],
+            subject_data['credits'],
+            subject_data['description']
+        ))
+        self.connection.commit()
+        return self.cursor.lastrowid
+    
+    def get_all_subjects(self):
+        """الحصول على جميع المواد"""
+        self.cursor.execute("SELECT * FROM subjects")
+        return self.cursor.fetchall()
+    
+    def assign_teacher_to_subject(self, teacher_id, subject_id):
+        """ربط معلم بمادة"""
+        self.cursor.execute('''
+            INSERT OR IGNORE INTO teacher_subjects (teacher_id, subject_id)
+            VALUES (?, ?)
+        ''', (teacher_id, subject_id))
+        self.connection.commit()
+    
+    def add_grade(self, grade_data):
+        """إضافة درجة"""
+        self.cursor.execute('''
+            INSERT INTO grades (student_id, subject_id, exam_type, 
+                              score, max_score, teacher_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            grade_data['student_id'],
+            grade_data['subject_id'],
+            grade_data['exam_type'],
+            grade_data['score'],
+            grade_data['max_score'],
+            grade_data['teacher_id']
+        ))
+        self.connection.commit()
+    
+    def get_student_grades(self, student_id):
+        """الحصول على درجات طالب"""
+        self.cursor.execute('''
+            SELECT g.*, s.subject_name, t.full_name as teacher_name
+            FROM grades g
+            JOIN subjects s ON g.subject_id = s.id
+            JOIN teachers t ON g.teacher_id = t.id
+            WHERE g.student_id = ?
+            ORDER BY g.date DESC
+        ''', (student_id,))
+        return self.cursor.fetchall()
+    
+    def mark_attendance(self, attendance_data):
+        """تسجيل الحضور"""
+        self.cursor.execute('''
+            INSERT OR REPLACE INTO attendance (student_id, date, status, notes)
+            VALUES (?, ?, ?, ?)
+        ''', (
+            attendance_data['student_id'],
+            attendance_data['date'],
+            attendance_data['status'],
+            attendance_data.get('notes', '')
+        ))
+        self.connection.commit()
+    
+    def get_attendance_by_date(self, date, class_id=None):
+        """الحصول على الحضور حسب التاريخ"""
+        if class_id:
+            query = '''
+                SELECT a.*, s.full_name, s.student_id
+                FROM attendance a
+                JOIN students s ON a.student_id = s.id
+                WHERE a.date = ? AND s.class_id = ?
+            '''
+            self.cursor.execute(query, (date, class_id))
+        else:
+            query = '''
+                SELECT a.*, s.full_name, s.student_id
+                FROM attendance a
+                JOIN students s ON a.student_id = s.id
+                WHERE a.date = ?
+            '''
+            self.cursor.execute(query, (date,))
+        return self.cursor.fetchall()
+    
+    def add_timetable_entry(self, timetable_data):
+        """إضافة حصة للجدول الدراسي"""
+        self.cursor.execute('''
+            INSERT INTO timetable (class_id, subject_id, teacher_id, 
+                                 day, start_time, end_time, room)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            timetable_data['class_id'],
+            timetable_data['subject_id'],
+            timetable_data['teacher_id'],
+            timetable_data['day'],
+            timetable_data['start_time'],
+            timetable_data['end_time'],
+            timetable_data['room']
+        ))
+        self.connection.commit()
+    
+    def get_timetable_by_class(self, class_id):
+        """الحصول على الجدول الدراسي لصف معين"""
+        self.cursor.execute('''
+            SELECT t.*, s.subject_name, te.full_name as teacher_name
+            FROM timetable t
+            JOIN subjects s ON t.subject_id = s.id
+            JOIN teachers te ON t.teacher_id = te.id
+            WHERE t.class_id = ?
+            ORDER BY 
+                CASE t.day 
+                    WHEN 'الأحد' THEN 1
+                    WHEN 'الإثنين' THEN 2
+                    WHEN 'الثلاثاء' THEN 3
+                    WHEN 'الأربعاء' THEN 4
+                    WHEN 'الخميس' THEN 5
+                END,
+                t.start_time
+        ''', (class_id,))
+        return self.cursor.fetchall()
+    
+    def add_notification(self, notification_data):
+        """إضافة إشعار"""
+        self.cursor.execute('''
+            INSERT INTO notifications (sender_id, recipient_id, title, 
+                                     message, type)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (
+            notification_data['sender_id'],
+            notification_data.get('recipient_id'),
+            notification_data['title'],
+            notification_data['message'],
+            notification_data.get('type', 'general')
+        ))
+        self.connection.commit()
+    
+    def get_user_notifications(self, user_id):
+        """الحصول على إشعارات المستخدم"""
+        self.cursor.execute('''
+            SELECT n.*, u.full_name as sender_name
+            FROM notifications n
+            LEFT JOIN users u ON n.sender_id = u.id
+            WHERE n.recipient_id = ? OR n.recipient_id IS NULL
+            ORDER BY n.created_at DESC
+        ''', (user_id,))
+        return self.cursor.fetchall()
+    
+    def mark_notification_read(self, notification_id):
+        """تحديد الإشعار كمقروء"""
+        self.cursor.execute(
+            "UPDATE notifications SET is_read = 1 WHERE id = ?",
+            (notification_id,)
+        )
+        self.connection.commit()
+    
+    def get_dashboard_stats(self):
+        """إحصائيات لوحة التحكم"""
+        stats = {}
+        
+        # عدد الطلاب
+        self.cursor.execute("SELECT COUNT(*) FROM students WHERE status = 'active'")
+        stats['total_students'] = self.cursor.fetchone()[0]
+        
+        # عدد المعلمين
+        self.cursor.execute("SELECT COUNT(*) FROM teachers")
+        stats['total_teachers'] = self.cursor.fetchone()[0]
+        
+        # عدد الصفوف
+        self.cursor.execute("SELECT COUNT(*) FROM classes")
+        stats['total_classes'] = self.cursor.fetchone()[0]
+        
+        # عدد المواد
+        self.cursor.execute("SELECT COUNT(*) FROM subjects")
+        stats['total_subjects'] = self.cursor.fetchone()[0]
+        
+        # نسبة الحضور اليوم
+        today = datetime.now().strftime('%Y-%m-%d')
+        self.cursor.execute('''
+            SELECT 
+                COUNT(CASE WHEN status = 'present' THEN 1 END) as present,
+                COUNT(*) as total
+            FROM attendance
+            WHERE date = ?
+        ''', (today,))
+        result = self.cursor.fetchone()
+        if result and result['total'] > 0:
+            stats['attendance_rate'] = (result['present'] / result['total']) * 100
+        else:
+            stats['attendance_rate'] = 0
+        
+        return stats
+    
+    def close(self):
+        """إغلاق الاتصال بقاعدة البيانات"""
+        self.connection.close()
             
